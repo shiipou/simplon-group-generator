@@ -5,7 +5,7 @@ Generate a group of student from a list of students
 
 Just write a json array of students name in the students.json file and run the program with :
 ```bash
-node group-loto.mjs
+node main.mjs
 ```
 
 It will write output to the console and to last_brief.json
