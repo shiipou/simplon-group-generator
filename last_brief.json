@@ -1,26 +1,8 @@
 [
-    [
-        "Coralie ANTOINE",
-        "Soumaya BELHACHEMI"
-    ],
-    [
-        "Jean-Charles AUDEBERT",
-        "Thibault MESMIN"
-    ],
-    [
-        "Charlotte CHARRIER",
-        "Omer HAMAD ELBASHIER"
-    ],
-    [
-        "Morgan BLEUNVEN",
-        "Sandrine FAUCHER"
-    ],
-    [
-        "Jérôme BOUHET",
-        "Jérémy BOURDEAU"
-    ],
-    [
-        "Marie TRANCHANT",
-        "Olivier VILLAVERDE"
-    ]
+  ["Olivier VILLAVERDE", "Morgan BLEUNVEN"],
+  ["Jérémy BOURDEAU", "Jean-Charles AUDEBERT"],
+  ["Marie TRANCHANT", "Jérôme BOUHET"],
+  ["Sandrine FAUCHER", "Thibault MESMIN"],
+  ["Charlotte CHARRIER", "Omar HAMAD ELBASHIER"],
+  ["Coralie ANTOINE", "Soumaya BELHACHEMI"]
 ]
