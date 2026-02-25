@@ -46,7 +46,8 @@ fn build_pair_counts(conn: &Connection) -> HashMap<(String, String), i64> {
 
     for row in rows {
         let (a, b, cnt) = row.unwrap();
-        counts.insert((a, b), cnt);
+        let key = normalize_pair(&a, &b);
+        *counts.entry(key).or_insert(0) += cnt;
     }
     counts
 }
