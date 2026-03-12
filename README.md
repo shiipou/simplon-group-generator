@@ -9,7 +9,7 @@ cargo build --release
 mv ./target/release/simplon-group-generator ./
 ```
 
-Just write a json array of students name in the students.json file and run the program with :
+Just write a json array of students name in the `students.json` file and run the program with :
 ```bash
 ./simplon-group-generator
 ```
