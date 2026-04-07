@@ -277,16 +277,8 @@ fn save_groups(conn: &Connection, groups: &[Vec<String>]) {
         )
         .unwrap_or(1);
 
-    let next_group_id: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(group_id), 0) FROM group_members",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-
     for (i, group) in groups.iter().enumerate() {
-        let group_id = next_group_id + (i as i64) + 1;
+        let group_id = (i as i64) + 1;
         for member in group {
             conn.execute(
                 "INSERT INTO group_members (brief_id, group_id, member) VALUES (?1, ?2, ?3)",
