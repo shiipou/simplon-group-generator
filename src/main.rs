@@ -200,7 +200,7 @@ fn candidate_score(
 ///     y ajouter les meilleurs candidats restants.
 ///  3. Répéter N fois et garder la meilleure combinaison.
 ///  4. Les éventuels étudiants restants (si le total n'est pas divisible par
-///     group_size) sont rattachés au dernier groupe.
+///     group_size) forment un dernier groupe plus petit.
 fn generate_groups(
     students: &[String],
     counts: &HashMap<(String, String), i64>,
@@ -255,18 +255,6 @@ fn generate_groups(
             }
 
             groups.push(group);
-        }
-
-        // Rattacher les éventuels étudiants restants au dernier groupe complet.
-        if groups.len() >= 2 {
-            if let Some(last) = groups.last() {
-                if last.len() < group_size {
-                    let last_group = groups.pop().unwrap();
-                    if let Some(prev) = groups.last_mut() {
-                        prev.extend(last_group);
-                    }
-                }
-            }
         }
 
         if total_score < best_total_score {
