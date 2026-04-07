@@ -2,7 +2,52 @@ use rand::seq::SliceRandom;
 use rusqlite::{params, Connection};
 use serde_json;
 use std::collections::HashMap;
+use std::env;
 use std::fs;
+
+/// Parse les arguments de la ligne de commande et renvoie la taille de groupe souhaitée.
+fn parse_group_size() -> usize {
+    let args: Vec<String> = env::args().collect();
+    let mut group_size: usize = 2;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--size" | "-s" => {
+                i += 1;
+                if i < args.len() {
+                    group_size = args[i]
+                        .parse()
+                        .expect("La taille de groupe doit être un entier positif");
+                } else {
+                    eprintln!("Erreur : --size nécessite une valeur");
+                    std::process::exit(1);
+                }
+            }
+            "--help" | "-h" => {
+                println!("Usage: simplon-group-generator [OPTIONS]");
+                println!();
+                println!("Options:");
+                println!("  -s, --size <N>  Nombre de personnes par groupe (défaut : 2)");
+                println!("  -h, --help      Affiche cette aide");
+                std::process::exit(0);
+            }
+            _ => {
+                eprintln!("Argument inconnu : {}", args[i]);
+                eprintln!("Utiliser --help pour afficher l'aide");
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
+    if group_size < 2 {
+        eprintln!("Erreur : la taille de groupe doit être au moins 2");
+        std::process::exit(1);
+    }
+
+    group_size
+}
 
 /// Crée la table des groupes si elle n'existe pas encore.
 fn init_db(conn: &Connection) {
@@ -58,19 +103,36 @@ fn pair_score(counts: &HashMap<(String, String), i64>, a: &str, b: &str) -> i64 
     *counts.get(&key).unwrap_or(&0)
 }
 
-/// Génère des duos en minimisant le score total (duos les moins souvent ensemble).
+/// Calcule le score total d'ajout d'un candidat à un groupe existant :
+/// somme des scores de paires avec chaque membre du groupe.
+fn candidate_score(
+    counts: &HashMap<(String, String), i64>,
+    group: &[String],
+    candidate: &str,
+) -> i64 {
+    group
+        .iter()
+        .map(|member| pair_score(counts, member, candidate))
+        .sum()
+}
+
+/// Génère des groupes de `group_size` personnes en minimisant le score total
+/// (membres les moins souvent ensemble).
 ///
 /// Algorithme glouton avec shuffles aléatoires :
 ///  1. Mélanger la liste des étudiants.
-///  2. Pour chaque étudiant non encore apparié, lui trouver le partenaire
-///     restant avec le score le plus bas.
+///  2. Pour chaque étudiant non encore assigné, démarrer un nouveau groupe et
+///     y ajouter les meilleurs candidats restants.
 ///  3. Répéter N fois et garder la meilleure combinaison.
+///  4. Les éventuels étudiants restants (si le total n'est pas divisible par
+///     group_size) sont rattachés au dernier groupe.
 fn generate_groups(
     students: &[String],
     counts: &HashMap<(String, String), i64>,
-) -> Vec<(String, String)> {
+    group_size: usize,
+) -> Vec<Vec<String>> {
     let mut rng = rand::rng();
-    let mut best_groups: Vec<(String, String)> = Vec::new();
+    let mut best_groups: Vec<Vec<String>> = Vec::new();
     let mut best_total_score = i64::MAX;
 
     let iterations = 10_000; // nombre de tentatives aléatoires
@@ -79,7 +141,7 @@ fn generate_groups(
         let mut pool: Vec<&str> = students.iter().map(|s| s.as_str()).collect();
         pool.shuffle(&mut rng);
 
-        let mut groups: Vec<(String, String)> = Vec::new();
+        let mut groups: Vec<Vec<String>> = Vec::new();
         let mut used = vec![false; pool.len()];
         let mut total_score: i64 = 0;
 
@@ -88,36 +150,47 @@ fn generate_groups(
                 continue;
             }
 
-            let mut best_j: Option<usize> = None;
-            let mut best_s = i64::MAX;
+            // Démarrer un nouveau groupe avec l'étudiant i
+            used[i] = true;
+            let mut group = vec![pool[i].to_string()];
 
-            for j in (i + 1)..pool.len() {
-                if used[j] {
-                    continue;
+            // Ajouter group_size - 1 membres supplémentaires
+            while group.len() < group_size {
+                let mut best_j: Option<usize> = None;
+                let mut best_s = i64::MAX;
+
+                for j in 0..pool.len() {
+                    if used[j] {
+                        continue;
+                    }
+                    let s = candidate_score(counts, &group, pool[j]);
+                    if s < best_s {
+                        best_s = s;
+                        best_j = Some(j);
+                    }
                 }
-                let s = pair_score(counts, pool[i], pool[j]);
-                if s < best_s {
-                    best_s = s;
-                    best_j = Some(j);
+
+                if let Some(j) = best_j {
+                    used[j] = true;
+                    total_score += best_s;
+                    group.push(pool[j].to_string());
+                } else {
+                    break; // Plus d'étudiants disponibles
                 }
             }
 
-            if let Some(j) = best_j {
-                used[i] = true;
-                used[j] = true;
-                total_score += best_s;
-                groups.push((pool[i].to_string(), pool[j].to_string()));
-            }
-            // Si nombre impair, le dernier reste seul (géré plus bas).
+            groups.push(group);
         }
 
-        // Gérer un étudiant restant (nombre impair).
-        for (i, &is_used) in used.iter().enumerate() {
-            if !is_used {
-                // Étudiant restant (nombre impair) — on le marque avec un membre vide.
-                // Il sera rattaché au dernier groupe pour former un trio à l'affichage.
-                groups.push((pool[i].to_string(), String::new()));
-                break;
+        // Rattacher les éventuels étudiants restants au dernier groupe complet.
+        if groups.len() >= 2 {
+            if let Some(last) = groups.last() {
+                if last.len() < group_size {
+                    let last_group = groups.pop().unwrap();
+                    if let Some(prev) = groups.last_mut() {
+                        prev.extend(last_group);
+                    }
+                }
             }
         }
 
@@ -131,8 +204,8 @@ fn generate_groups(
     best_groups
 }
 
-/// Sauvegarde les nouveaux duos dans la DB.
-fn save_groups(conn: &Connection, groups: &[(String, String)]) {
+/// Sauvegarde les groupes dans la DB en enregistrant toutes les paires de chaque groupe.
+fn save_groups(conn: &Connection, groups: &[Vec<String>]) {
     let next_brief_id: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(brief_id), 0) + 1 FROM groups",
@@ -141,52 +214,37 @@ fn save_groups(conn: &Connection, groups: &[(String, String)]) {
         )
         .unwrap_or(1);
 
-    for (a, b) in groups {
-        if b.is_empty() {
-            continue; // étudiant solitaire (nombre impair), pas un vrai duo
+    for group in groups {
+        for i in 0..group.len() {
+            for j in (i + 1)..group.len() {
+                let (na, nb) = normalize_pair(&group[i], &group[j]);
+                conn.execute(
+                    "INSERT INTO groups (brief_id, member_a, member_b) VALUES (?1, ?2, ?3)",
+                    params![next_brief_id, na, nb],
+                )
+                .expect("Impossible d'enregistrer un groupe");
+            }
         }
-        let (na, nb) = normalize_pair(a, b);
-        conn.execute(
-            "INSERT INTO groups (brief_id, member_a, member_b) VALUES (?1, ?2, ?3)",
-            params![next_brief_id, na, nb],
-        )
-        .expect("Impossible d'enregistrer un groupe");
     }
 
     println!("✔ Groupes enregistrés avec brief_id = {next_brief_id}");
 }
 
 /// Affiche les groupes générés.
-fn print_groups(groups: &[(String, String)], students: &[String]) {
+fn print_groups(groups: &[Vec<String>]) {
     println!("\n╔══════════════════════════════════════════════╗");
     println!("║          NOUVEAUX GROUPES GÉNÉRÉS            ║");
     println!("╠══════════════════════════════════════════════╣");
 
-    // Trouver l'éventuel solitaire (nombre impair).
-    let solo: Option<&str> = groups
-        .iter()
-        .find(|(_, b)| b.is_empty())
-        .map(|(a, _)| a.as_str());
-
-    let real_groups: Vec<&(String, String)> = groups.iter().filter(|(_, b)| !b.is_empty()).collect();
-
-    for (i, (a, b)) in real_groups.iter().enumerate() {
+    for (i, group) in groups.iter().enumerate() {
         let num = i + 1;
-        // Si c'est le dernier groupe et qu'il y a un solitaire, on forme un trio.
-        if let Some(extra) = solo {
-            if i == real_groups.len() - 1 {
-                println!("║ Groupe {num:>2}: {a}");
-                println!("║            {b}");
-                println!("║            {extra}");
-                continue;
+        for (j, member) in group.iter().enumerate() {
+            if j == 0 {
+                println!("║ Groupe {num:>2}: {member}");
+            } else {
+                println!("║            {member}");
             }
         }
-        println!("║ Groupe {num:>2}: {a}");
-        println!("║            {b}");
-    }
-
-    if solo.is_none() && students.len() % 2 == 0 {
-        // Tous en duos, rien de spécial.
     }
 
     println!("╚══════════════════════════════════════════════╝");
@@ -241,29 +299,33 @@ fn print_matrix(conn: &Connection, students: &[String]) {
 }
 
 fn main() {
-    // 1. Lire les étudiants
+    // 1. Lire la taille de groupe souhaitée
+    let group_size = parse_group_size();
+
+    // 2. Lire les étudiants
     let data = fs::read_to_string("students.json").expect("Impossible de lire students.json");
     let students: Vec<String> =
         serde_json::from_str(&data).expect("Format invalide dans students.json");
 
     println!("📋 {} apprenants chargés.", students.len());
+    println!("👥 Taille de groupe demandée : {group_size}");
 
-    // 2. Ouvrir / créer la base SQLite
+    // 3. Ouvrir / créer la base SQLite
     let conn = Connection::open("db.sqlite").expect("Impossible d'ouvrir db.sqlite");
     init_db(&conn);
 
     // 4. Compter les duos existants
     let counts = build_pair_counts(&conn);
-    println!("📦 {} duos distincts en base.", counts.len());
+    println!("📦 {} paires distinctes en base.", counts.len());
 
     // 5. Générer les nouveaux groupes
-    let groups = generate_groups(&students, &counts);
+    let groups = generate_groups(&students, &counts, group_size);
 
     // 6. Sauvegarder dans la base
     save_groups(&conn, &groups);
 
     // 7. Affichage
-    print_groups(&groups, &students);
+    print_groups(&groups);
 
     // 8. Matrice des rencontres
     print_matrix(&conn, &students);
