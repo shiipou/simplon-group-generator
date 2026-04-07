@@ -49,17 +49,86 @@ fn parse_group_size() -> usize {
     group_size
 }
 
-/// Crée la table des groupes si elle n'existe pas encore.
+/// Crée la table des groupes si elle n'existe pas encore, et migre l'ancien schéma si nécessaire.
 fn init_db(conn: &Connection) {
+    // Vérifier si l'ancien schéma existe (avec member_a / member_b).
+    let has_old_schema: bool = conn
+        .prepare("SELECT member_a FROM groups LIMIT 1")
+        .is_ok();
+
+    if has_old_schema {
+        migrate_db(conn);
+    } else {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS group_members (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                brief_id  INTEGER NOT NULL,
+                group_id  INTEGER NOT NULL,
+                member    TEXT NOT NULL
+            );",
+        )
+        .expect("Impossible de créer la table group_members");
+    }
+}
+
+/// Migre l'ancienne table `groups` (member_a, member_b) vers `group_members` (group_id, member).
+fn migrate_db(conn: &Connection) {
+    println!("🔄 Migration de la base de données vers le nouveau schéma…");
+
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS groups (
+        "CREATE TABLE IF NOT EXISTS group_members (
             id        INTEGER PRIMARY KEY AUTOINCREMENT,
             brief_id  INTEGER NOT NULL,
-            member_a  TEXT NOT NULL,
-            member_b  TEXT NOT NULL
+            group_id  INTEGER NOT NULL,
+            member    TEXT NOT NULL
         );",
     )
-    .expect("Impossible de créer la table groups");
+    .expect("Impossible de créer la table group_members");
+
+    // Lire toutes les anciennes paires.
+    let mut stmt = conn
+        .prepare("SELECT brief_id, member_a, member_b FROM groups WHERE member_a != '' AND member_b != ''")
+        .expect("Requête invalide");
+
+    let rows: Vec<(i64, String, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .expect("Erreur lors de la lecture des anciens groupes")
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // Dans l'ancien schéma, chaque ligne est un duo distinct.
+    // On leur attribue un group_id séquentiel par brief_id.
+    let mut group_id_counter: HashMap<i64, i64> = HashMap::new();
+
+    for (brief_id, member_a, member_b) in &rows {
+        let gid = group_id_counter.entry(*brief_id).or_insert(0);
+        *gid += 1;
+        let group_id = *gid;
+
+        conn.execute(
+            "INSERT INTO group_members (brief_id, group_id, member) VALUES (?1, ?2, ?3)",
+            params![brief_id, group_id, member_a],
+        )
+        .expect("Erreur lors de la migration (member_a)");
+
+        conn.execute(
+            "INSERT INTO group_members (brief_id, group_id, member) VALUES (?1, ?2, ?3)",
+            params![brief_id, group_id, member_b],
+        )
+        .expect("Erreur lors de la migration (member_b)");
+    }
+
+    // Supprimer l'ancienne table.
+    conn.execute_batch("DROP TABLE groups;")
+        .expect("Impossible de supprimer l'ancienne table groups");
+
+    println!("✔ Migration terminée ({} anciens duos migrés).", rows.len());
 }
 
 /// Renvoie la paire triée pour garantir l'unicité (A,B) == (B,A).
@@ -71,12 +140,18 @@ fn normalize_pair(a: &str, b: &str) -> (String, String) {
     }
 }
 
-/// Construit une matrice de comptage : combien de fois chaque duo est apparu.
+/// Construit une matrice de comptage : combien de fois chaque duo est apparu dans le même groupe.
 fn build_pair_counts(conn: &Connection) -> HashMap<(String, String), i64> {
     let mut counts: HashMap<(String, String), i64> = HashMap::new();
 
     let mut stmt = conn
-        .prepare("SELECT member_a, member_b, COUNT(*) as cnt FROM groups GROUP BY member_a, member_b")
+        .prepare(
+            "SELECT a.member, b.member, COUNT(DISTINCT a.brief_id) as cnt
+             FROM group_members a
+             JOIN group_members b ON a.brief_id = b.brief_id AND a.group_id = b.group_id
+             WHERE a.member < b.member
+             GROUP BY a.member, b.member",
+        )
         .expect("Requête invalide");
 
     let rows = stmt
@@ -87,7 +162,7 @@ fn build_pair_counts(conn: &Connection) -> HashMap<(String, String), i64> {
                 row.get::<_, i64>(2)?,
             ))
         })
-        .expect("Erreur lors de la lecture des duos");
+        .expect("Erreur lors de la lecture des paires");
 
     for row in rows {
         let (a, b, cnt) = row.unwrap();
@@ -204,26 +279,32 @@ fn generate_groups(
     best_groups
 }
 
-/// Sauvegarde les groupes dans la DB en enregistrant toutes les paires de chaque groupe.
+/// Sauvegarde les groupes dans la DB : une ligne par membre, liée par group_id.
 fn save_groups(conn: &Connection, groups: &[Vec<String>]) {
     let next_brief_id: i64 = conn
         .query_row(
-            "SELECT COALESCE(MAX(brief_id), 0) + 1 FROM groups",
+            "SELECT COALESCE(MAX(brief_id), 0) + 1 FROM group_members",
             [],
             |r| r.get(0),
         )
         .unwrap_or(1);
 
-    for group in groups {
-        for i in 0..group.len() {
-            for j in (i + 1)..group.len() {
-                let (na, nb) = normalize_pair(&group[i], &group[j]);
-                conn.execute(
-                    "INSERT INTO groups (brief_id, member_a, member_b) VALUES (?1, ?2, ?3)",
-                    params![next_brief_id, na, nb],
-                )
-                .expect("Impossible d'enregistrer un groupe");
-            }
+    let next_group_id: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(group_id), 0) FROM group_members",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+
+    for (i, group) in groups.iter().enumerate() {
+        let group_id = next_group_id + (i as i64) + 1;
+        for member in group {
+            conn.execute(
+                "INSERT INTO group_members (brief_id, group_id, member) VALUES (?1, ?2, ?3)",
+                params![next_brief_id, group_id, member],
+            )
+            .expect("Impossible d'enregistrer un membre");
         }
     }
 
