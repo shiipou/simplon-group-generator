@@ -14,6 +14,14 @@ Just write a json array of students name in the `students.json` file and run the
 ./simplon-group-generator
 ```
 
+By default, groups of 2 are generated. Use the `--size` (or `-s`) option to specify a different group size:
+```bash
+./simplon-group-generator --size 3
+./simplon-group-generator -s 4
+```
+
+If the number of students is not evenly divisible by the group size, the remaining students are added to the last group.
+
 It will write output to the console and into the database db.sqlite. Don't forget to commit and push the database to never loose your previously generated groups.
 
 Next time you'll run it, the groups won't be formed with 2 people together if they already been grouped a one time.
